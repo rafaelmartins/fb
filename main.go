@@ -83,15 +83,25 @@ func upload(files []string) error {
 			return err
 		}
 	} else {
+		withStdin := false
 		for _, file := range files {
 			part, err := writer.CreateFormFile("file", filepath.Base(file))
 			if err != nil {
 				return err
 			}
 
-			f, err := os.Open(file)
-			if err != nil {
-				return err
+			var f io.Reader
+			if file == "-" {
+				if withStdin {
+					return errors.New("stdin can't be uploaded more than once")
+				}
+				withStdin = true
+				f = os.Stdin
+			} else {
+				f, err = os.Open(file)
+				if err != nil {
+					return err
+				}
 			}
 
 			if _, err := io.Copy(part, f); err != nil {
