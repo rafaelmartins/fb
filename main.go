@@ -3,14 +3,17 @@ package main
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 
 	"github.com/schollz/progressbar/v3"
 	"gopkg.in/yaml.v2"
@@ -19,6 +22,8 @@ import (
 var (
 	bar  *progressbar.ProgressBar
 	conf *config
+
+	toDelete = flag.Bool("d", false, "delete file by id or url, instead of uploading")
 )
 
 type config struct {
@@ -154,14 +159,80 @@ func upload(files []string) error {
 	return nil
 }
 
+func del(files []string) error {
+	if len(files) == 0 {
+		return errors.New("nothing selected")
+	}
+
+	if len(files) != 1 {
+		return errors.New("only one file can be deleted")
+	}
+
+	bu, err := url.Parse(conf.Url)
+	if err != nil {
+		return err
+	}
+
+	u, err := url.Parse(files[0])
+	if err != nil {
+		return err
+	}
+
+	fu := files[0]
+
+	if u.Scheme == "" && u.Host == "" && !strings.Contains(u.Path, "/") {
+		fu = conf.Url
+		if !strings.HasSuffix(fu, "/") {
+			fu += "/"
+		}
+		fu += files[0]
+	} else if u.Scheme != bu.Scheme || u.Host != bu.Host {
+		return fmt.Errorf("invalid url: %s", files[0])
+	}
+
+	req, err := http.NewRequest("DELETE", fu, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(conf.Username, conf.Password)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+
+	switch resp.StatusCode {
+	case 200:
+		fmt.Println("ok")
+	case 401:
+		return errors.New("authentication failed. please check credentials/url")
+	case 404:
+		return errors.New("file not found")
+	case 500:
+		return errors.New("internal server error")
+	default:
+		return errors.New(resp.Status)
+	}
+
+	return nil
+}
+
 func main() {
+	flag.Parse()
+
 	var err error
 	conf, err = readConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 	}
 
-	if err := upload(os.Args[1:]); err != nil {
+	f := upload
+	if *toDelete {
+		f = del
+	}
+
+	if err := f(flag.Args()); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 	}
 }
