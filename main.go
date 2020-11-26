@@ -225,6 +225,7 @@ func main() {
 	conf, err = readConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
 	}
 
 	f := upload
