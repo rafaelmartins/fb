@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/schollz/progressbar/v3"
@@ -74,42 +75,95 @@ func readConfig() (*config, error) {
 	return c, nil
 }
 
+func handleFile(w *multipart.Writer, file string) error {
+	part, err := w.CreateFormFile("file", filepath.Base(file))
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(part, f)
+	return err
+}
+
+func handleUrl(w *multipart.Writer, u *url.URL) error {
+	up := strings.Split(u.Path, "/")
+	if len(up) == 0 {
+		return errors.New("invalid url path")
+	}
+	fn := up[len(up)-1]
+	if fn == "" {
+		fn = "-"
+	}
+
+	part, err := w.CreateFormFile("file", fn)
+	if err != nil {
+		return err
+	}
+
+	c, err := http.Get(u.String())
+	if err != nil {
+		return err
+	}
+	defer c.Body.Close()
+
+	length := int64(-1)
+	if v := c.Header.Get("content-length"); v != "" {
+		if l, err := strconv.ParseInt(v, 10, 64); err == nil {
+			length = l
+		}
+	}
+
+	bar = progressbar.DefaultBytes(length, "downloading")
+	_, err = io.Copy(part, &pbReader{c.Body})
+	return err
+}
+
+func handleStdin(w *multipart.Writer) error {
+	part, err := w.CreateFormFile("file", "-")
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(part, os.Stdin)
+	return err
+}
+
 func upload(files []string) error {
 	body := new(bytes.Buffer)
 	writer := multipart.NewWriter(body)
 
 	if len(files) == 0 {
-		part, err := writer.CreateFormFile("file", "-")
-		if err != nil {
-			return err
-		}
-
-		if _, err := io.Copy(part, os.Stdin); err != nil {
+		if err := handleStdin(writer); err != nil {
 			return err
 		}
 	} else {
 		withStdin := false
 		for _, file := range files {
-			part, err := writer.CreateFormFile("file", filepath.Base(file))
-			if err != nil {
-				return err
-			}
-
-			var f io.Reader
 			if file == "-" {
 				if withStdin {
 					return errors.New("stdin can't be uploaded more than once")
 				}
 				withStdin = true
-				f = os.Stdin
-			} else {
-				f, err = os.Open(file)
-				if err != nil {
+				if err := handleStdin(writer); err != nil {
 					return err
 				}
+				continue
 			}
 
-			if _, err := io.Copy(part, f); err != nil {
+			if u, err := url.Parse(file); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+				if err := handleUrl(writer, u); err != nil {
+					return err
+				}
+				continue
+			}
+
+			if err := handleFile(writer, file); err != nil {
 				return err
 			}
 		}
@@ -120,7 +174,7 @@ func upload(files []string) error {
 	}
 
 	length := int64(body.Len())
-	bar = progressbar.DefaultBytes(length, "uploading")
+	bar = progressbar.DefaultBytes(length, "uploading  ")
 	req, err := http.NewRequest("POST", conf.Url, &pbReader{body})
 	if err != nil {
 		return err
